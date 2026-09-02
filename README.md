@@ -1,94 +1,100 @@
-# Build a tool for Churchill & Lincoln
+# Mortgage Overpayment Analyser
 
-This is the official template for [manyuseful.tools](https://manyuseful.tools)
-— the pay-per-use tool marketplace. You write **one function**; the platform
-handles the storefront, the form, payment, delivery, email, and the buyer's
-permanent result link. You keep **95% of every sale**, paid directly into
-your own Stripe account at the moment of purchase.
+An example tool built for [ManyUseful.Tools](https://manyuseful.tools), the
+pay-per-use tool marketplace. It shows how a complete, sellable tool fits in
+three small TypeScript files: a form, a config, and one `run()` function.
+The platform handles the storefront, payment, delivery, email and the buyer's
+permanent result link. You keep 95% of every sale.
 
-## The whole contract
+## What the tool does
 
-A tool is three files in `tool/`:
+A buyer enters five numbers about their mortgage:
 
-| File | What it is |
+| Field | Meaning |
 |---|---|
-| `config.ts` | Name, description, price and pricing curve, required secrets |
-| `schema.ts` | The buyer's form, declared as fields — the platform renders it |
-| `run.ts` | `async (input, secrets, ctx) => Result` — your actual tool |
+| Outstanding balance (£) | What is left to pay |
+| Interest rate % (annual) | Their current rate |
+| Remaining term (years) | Years left on the contractual term |
+| Monthly overpayment (£) | The extra they plan to pay each month |
+| One-off lump sum (£, optional) | A single payment made today |
 
-Your `run()` gets the buyer's validated answers and your secrets, does its
-work (call an LLM, crunch numbers, whatever), and returns a **Result**: a
-title, a one-line summary, and content blocks (markdown, tables, key-values,
-charts) plus optional file attachments like an Excel model. The platform
-renders that identically-branded for every tool on the marketplace. You
-never write frontend, payment, or email code.
+The tool amortises the mortgage twice, once at the required monthly payment
+and once with the overpayment (and lump sum) applied, and returns:
 
-## Start here
+- **Headline figures** – interest saved, months shaved off, the required
+  monthly payment, and the new payoff time versus the original.
+- **A line chart** of the year-end balance for the baseline and the
+  overpayment scenario.
+- **A year-by-year table** of both balances.
+- **A downloadable Excel model** (`mortgage-overpayment.xlsx`) with an
+  inputs sheet and a full month-by-month amortisation sheet. The sheet uses
+  live formulas, so the buyer can change the rate, overpayment or lump sum
+  and watch the numbers update.
+- **A disclaimer** noting that it is an illustrative model, not advice.
+
+It is priced flat at £5 and needs no API keys or secrets.
+
+## How it is built
+
+Everything lives in `tool/`:
+
+| File | Role |
+|---|---|
+| `config.ts` | Slug, name, description, price (£5, flat) |
+| `schema.ts` | The five form fields the platform renders for the buyer |
+| `run.ts` | Amortisation maths and the result blocks (key-values, chart, table, markdown) |
+| `xlsx.ts` | Builds the Excel workbook with formulas from the computed model |
+| `excel.ts` | Small helper over the `xlsx` package for writing cells, formulas and formats |
+
+`run(input, secrets, ctx)` receives the validated form answers, calls
+`computeMortgage()`, and returns a `Result`: a title, a one-line summary,
+content blocks and the spreadsheet attachment. The platform renders it with
+the same branding as every other tool on the marketplace.
+
+## Run it locally
 
 ```bash
-# 1. Make your own repo from this template (green "Use this template"
-#    button on GitHub — don't fork), then:
 npm install
-cp .env.example .env      # add any API keys your tool will use
-npm run dev               # → http://localhost:5150
+npm run dev        # → http://localhost:5150
 ```
 
-The dev server renders your form, runs your `run()` with the `.env` secrets,
-and previews the result. The included example (a Meeting Agenda builder)
-works with **no keys at all** — run it first, then gut `tool/` and build
-yours. `npm run check` validates your config and schema against the
-platform's rules at any time.
+The dev server renders the form, runs `run()` and previews the result,
+including the Excel download. Other useful scripts:
 
-## The rules of the house
+```bash
+npm run check      # validate config and schema against platform rules
+npm run typecheck  # tsc --noEmit
+```
 
-- **Banknotes only.** Every price is a multiple of £5/$5. Your `config.ts`
-  declares one of three pricing curves, printed on your tool's card:
-  - `descent` — your price drops £5 per repeat purchase per buyer, flooring
-    at £5. The floor is platform law. Loyalty gets cheaper.
-  - `ascent` — starts at your list price and rises £5 per repeat purchase
-    per buyer, up to a cap you set. Price it knowing list is your intro
-    price: buyers who don't use their return links pay list again, never
-    more — so list must be a price you're happy with forever.
-  - `flat` — name your price and stand by it.
-- **Buyers have no accounts.** Repeat-purchase pricing works through return
-  links in the result emails. Your tool doesn't need to know any of this.
-- **If your run() throws, the buyer is refunded, not shortchanged.** The
-  platform retries twice, then refunds. So *do* throw on failure — never
-  return a degraded or empty result for a paid output.
-- **Your API keys are yours.** Declare names in `requiredSecrets`, set the
-  values in your dashboard's Secrets tab. They're stored encrypted by
-  Cloudflare inside your tool's own sandbox — the platform can't read them,
-  other tools can't reach them, and their cost comes out of your margin, so
-  price accordingly.
-- **Runtime:** TypeScript only, bundled to one file. No filesystem, no
-  native modules, HTTP via `ctx.fetch` only, and finish within a couple of
-  minutes (plenty for any LLM call). CPU and request limits are enforced.
-- **Attachments:** up to 5 MB total per result. For spreadsheet outputs,
-  generate the bytes yourself (e.g. with the `xlsx` package) and return
-  them as an attachment — pro tip: sheets with live formulas beat static
-  values; buyers love a model they can edit.
+## Use it as a starting point
+
+1. Make your own repo from this template (green "Use this template" button
+   on GitHub, rather than forking).
+2. Replace the contents of `tool/` with your own config, schema and `run()`.
+3. If your tool needs API keys, list their names in `requiredSecrets` in
+   `config.ts` and set the values in the dashboard's Secrets tab.
+
+### Platform rules worth knowing
+
+- **Prices are multiples of £5/$5.** Choose a `flat`, `descent` or `ascent`
+  pricing curve in `config.ts`.
+- **Throw on failure.** If `run()` throws, the platform retries twice and
+  then refunds the buyer. Never return a degraded result for a paid output.
+- **Runtime:** TypeScript only, bundled to one file. No filesystem, no native
+  modules, HTTP via `ctx.fetch` only, and a couple of minutes of runtime.
+- **Attachments:** up to 5 MB per result. Spreadsheets with live formulas,
+  like the one here, are far more useful to buyers than static values.
 
 ## Publishing
 
-1. Sign in at **app.manyuseful.tools** with GitHub, connect your Stripe
-   account (you're the merchant of record — buyers pay you directly).
-2. Create your tool there: pick the slug (it becomes
-   `your-slug.manyuseful.tools`) and copy the **deploy token**.
-3. In your repo: Settings → Secrets and variables → Actions → add
-   `CL_DEPLOY_TOKEN`.
-4. Set any `requiredSecrets` values in the dashboard's Secrets tab.
-5. **Push to main.** The included workflow validates, bundles, and
-   publishes. First version goes to the founders for a quick human review
-   (usually same-day); after approval, every push deploys live
-   automatically.
-
-The kill switch is ours; the tool, the price, the customers' money — yours.
-
-## What good tools have in common
-
-The form is the product: buyers pay for what comes out, and what comes out
-depends on what your questions extract. Six sharp questions beat twenty
-vague ones. Look at any tool on the marketplace and study its form before
-writing yours.
+1. Sign in at **app.manyuseful.tools** with GitHub and connect your Stripe
+   account. You are the merchant of record and buyers pay you directly.
+2. Create your tool, pick a slug (it becomes `your-slug.manyuseful.tools`)
+   and copy the deploy token.
+3. In your repo add the `CL_DEPLOY_TOKEN` secret under Settings → Secrets
+   and variables → Actions.
+4. Push to `main`. The included `publish.yml` workflow validates, bundles
+   and publishes. The first version gets a quick human review; after that
+   every push deploys automatically.
 
 Questions: **support@manyuseful.tools**

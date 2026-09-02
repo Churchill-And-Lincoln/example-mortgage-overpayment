@@ -1,16 +1,11 @@
 import type { ToolConfig } from "../sdk/types";
 
-// YOUR TOOL. Edit everything below. Every price is a multiple of £5/$5.
 export const config: ToolConfig = {
-  slug: "agenda", // becomes agenda.manyuseful.tools — must match the slug you create in the dashboard
-  name: "Meeting Agenda & Minutes Kit",
+  slug: "mortgage",
+  name: "Mortgage Overpayment Analyser",
   description:
-    "Answer six questions about your meeting and get a tight, time-boxed agenda, a decisions-and-actions minutes template, and a follow-up message ready to send.",
-  pricePence: 500, // £5
+    "What a monthly overpayment actually buys you: payoff dates, interest saved, months shaved — with a chart, both amortisation tables, and a downloadable Excel model with live formulas.",
+  pricePence: 500,
   currency: "gbp",
-  pricing: { model: "flat" }, // or { model: "descent" } or { model: "ascent", capPence: 2000 }
-  // Secrets your run() needs — set values in the dashboard's Secrets tab.
-  // Publishing is blocked until every listed secret is set. This example
-  // works WITHOUT a key (offline fallback), so nothing is required:
-  requiredSecrets: [], // e.g. ["OPENAI_API_KEY"] if your tool must have it
+  pricing: { model: "flat" },
 };

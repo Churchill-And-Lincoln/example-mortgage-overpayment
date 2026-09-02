@@ -1,87 +1,135 @@
-import type { Result, RunFn } from "../sdk/types";
+import type { Result, ToolCtx, ResultBlock } from "../sdk/types";
+import { buildMortgageXlsx } from "./xlsx";
 
-// THE TOOL. This is the only real code you write:
-//   (input, secrets, ctx) => Result
-// input   — the buyer's validated form answers (strings, keyed by field id)
-// secrets — the values you set in the dashboard Secrets tab
-// ctx     — ctx.fetch for HTTP calls, ctx.log for debugging
-//
-// Rules of the road: return within a couple of minutes; make external calls
-// only via ctx.fetch; never rely on global state between runs; if a paid
-// API fails, throw — the platform retries, and the buyer is refunded rather
-// than sold a blank page.
-export const run: RunFn = async (input, secrets, ctx) => {
-  const apiKey = secrets.OPENAI_API_KEY; // optional in this example
-  const markdown = apiKey
-    ? await generateWithLLM(input, apiKey, ctx)
-    : offlineDraft(input); // works with no key — great for local dev
-
-  const result: Result = {
-    title: `Agenda: ${input.purpose}`,
-    summary: `A ${input.minutes}-minute ${input.style.toLowerCase()} agenda with minutes template and follow-up.`,
-    blocks: [
-      {
-        type: "keyvalues",
-        items: [
-          { label: "Meeting length", value: `${input.minutes} minutes` },
-          { label: "Style", value: input.style },
-          { label: "Definition of done", value: input.outcome },
-        ],
-      },
-      { type: "markdown", content: markdown },
-    ],
-    // attachments: [ { filename, mimeType, data } ]  — e.g. an Excel model,
-    // ≤ 5 MB total. See the README for the pattern.
-  };
-  return result;
-};
-
-async function generateWithLLM(
-  input: Record<string, string>,
-  apiKey: string,
-  ctx: { fetch: typeof fetch },
-): Promise<string> {
-  const prompt = `Create a meeting kit in Markdown with three sections:
-## The Agenda — time-boxed to exactly ${input.minutes} minutes total, ordered so the meeting ends with "${input.outcome}" achieved. Style: ${input.style}.
-## Minutes Template — a fill-in-the-blanks structure for decisions, actions (owner + date), and parked items.
-## The Follow-up — a short message to send afterwards summarising decisions and actions.
-
-Meeting purpose: ${input.purpose}
-Attendees and what they care about: ${input.attendees}
-Topics that must be covered:\n${input.topics}
-
-Be specific and practical, no filler.`;
-
-  const res = await ctx.fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
-    body: JSON.stringify({
-      model: "gpt-4o-mini",
-      messages: [{ role: "user", content: prompt }],
-      max_tokens: 1800,
-    }),
-  });
-  if (!res.ok) throw new Error(`OpenAI ${res.status}: ${await res.text()}`);
-  const data = (await res.json()) as { choices: { message: { content: string } }[] };
-  return data.choices[0].message.content;
+export interface Scenario {
+  months: number;
+  totalInterest: number;
+  yearEndBalances: number[]; // balance at end of each year until payoff
+  monthly: { interest: number; balance: number }[]; // cached values for Excel
 }
 
-function offlineDraft(input: Record<string, string>): string {
-  const topics = input.topics.split(/\r?\n/).filter(Boolean);
-  const total = Number(input.minutes) || 30;
-  const opening = Math.max(2, Math.round(total * 0.1));
-  const closing = Math.max(3, Math.round(total * 0.15));
-  const per = Math.max(3, Math.floor((total - opening - closing) / Math.max(topics.length, 1)));
-  return `> _Offline mode (no OPENAI_API_KEY set) — structured draft._
+export interface MortgageModel {
+  balance: number;
+  rate: number; // % annual
+  termYears: number;
+  overpay: number; // £/month
+  lump: number;
+  payment: number; // required monthly payment
+  baseline: Scenario;
+  scenario: Scenario;
+}
 
-## The Agenda (${total} min)
-- **0–${opening} min** — Purpose & definition of done: *${input.outcome}*
-${topics.map((t, i) => `- **${opening + i * per}–${opening + (i + 1) * per} min** — ${t}`).join("\n")}
-- **Final ${closing} min** — Decisions recap, actions with owners, next steps
+const XLSX_MIME =
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
-## Minutes Template
-**Decisions:** … | **Actions (owner, due):** … | **Parked:** …
+/** "£1,234,567" — whole pounds, thousands separators. */
+const gbp = (n: number): string =>
+  `£${Math.round(n).toLocaleString("en-GB")}`;
 
-## The Follow-up
-"Thanks all — we met to ${input.purpose.toLowerCase()}. Decisions: … Actions: … Shout by EOD if I've missed anything."`;
+const num = (input: Record<string, string>, id: string, fallback = 0): number => {
+  const n = Number(input[id]);
+  return Number.isFinite(n) ? n : fallback;
+};
+
+export const DISCLAIMER_BLOCK: ResultBlock = {
+  type: "markdown",
+  content: `---
+
+> _This is an illustrative model built from your inputs and the stated
+> assumptions — not financial advice. Growth is applied in real (after-
+> inflation) terms; actual returns vary year to year, and rates and tax
+> rules change. Check anything important with a professional before acting._`,
+};
+
+
+function amortise(start: number, monthlyRate: number, payment: number, maxMonths: number): Scenario {
+  let bal = start;
+  let totalInterest = 0;
+  const yearEndBalances: number[] = [];
+  const monthly: Scenario["monthly"] = [];
+  let months = 0;
+  while (bal > 0.005 && months < maxMonths) {
+    const interest = bal * monthlyRate;
+    totalInterest += interest;
+    bal = Math.max(0, bal + interest - payment);
+    months++;
+    monthly.push({ interest, balance: bal });
+    if (months % 12 === 0 || bal === 0) yearEndBalances.push(bal);
+  }
+  return { months, totalInterest, yearEndBalances, monthly };
+}
+
+export function computeMortgage(input: Record<string, string>): MortgageModel {
+  const balance = num(input, "balance");
+  const rate = num(input, "rate");
+  const termYears = num(input, "term");
+  const overpay = num(input, "overpay");
+  const lump = num(input, "lump", 0);
+
+  const r = rate / 100 / 12;
+  const n = termYears * 12;
+  const payment = r === 0 ? balance / n : (balance * r) / (1 - Math.pow(1 + r, -n));
+  const cap = n + 12; // safety margin over the contractual term
+
+  const baseline = amortise(balance, r, payment, cap);
+  const scenario = amortise(Math.max(0, balance - lump), r, payment + overpay, cap);
+  return { balance, rate, termYears, overpay, lump, payment, baseline, scenario };
+}
+
+const yrs = (months: number) =>
+  `${Math.floor(months / 12)}y ${months % 12}m`;
+
+export async function run(
+  input: Record<string, string>,
+  _secrets: Record<string, string>,
+  _ctx: ToolCtx,
+): Promise<Result> {
+  const m = computeMortgage(input);
+  const saved = m.baseline.totalInterest - m.scenario.totalInterest;
+  const shaved = m.baseline.months - m.scenario.months;
+  const nYears = Math.ceil(m.baseline.months / 12);
+  const pad = (s: Scenario) =>
+    Array.from({ length: nYears }, (_, i) => Math.round(s.yearEndBalances[i] ?? 0));
+
+  const blocks: ResultBlock[] = [
+    {
+      type: "keyvalues",
+      items: [
+        { label: "Interest saved", value: gbp(saved) },
+        { label: "Time shaved off", value: `${shaved} months (${yrs(shaved)})` },
+        { label: "Required monthly payment", value: gbp(m.payment) },
+        { label: "Paid off in", value: `${yrs(m.scenario.months)} instead of ${yrs(m.baseline.months)}` },
+      ],
+    },
+    {
+      type: "chart",
+      kind: "line",
+      title: "Balance: baseline vs with overpayment",
+      xLabels: Array.from({ length: nYears }, (_, i) => `Y${i + 1}`),
+      series: [
+        { name: "Baseline", values: pad(m.baseline) },
+        { name: "With overpayment", values: pad(m.scenario) },
+      ],
+      yFormat: "currency",
+    },
+    {
+      type: "table",
+      header: ["Year", "Baseline balance", "With overpayment"],
+      rows: Array.from({ length: nYears }, (_, i) => [
+        String(i + 1),
+        gbp(m.baseline.yearEndBalances[i] ?? 0),
+        gbp(m.scenario.yearEndBalances[i] ?? 0),
+      ]),
+    },
+    DISCLAIMER_BLOCK,
+  ];
+
+  return {
+    title: "Your Mortgage Overpayment Analysis",
+    summary: `Overpaying ${gbp(m.overpay)}/month saves ${gbp(saved)} in interest and clears the mortgage ${yrs(shaved)} early`,
+    blocks,
+    attachments: [
+      { filename: "mortgage-overpayment.xlsx", mimeType: XLSX_MIME, data: buildMortgageXlsx(m) },
+    ],
+  };
 }
