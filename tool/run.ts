@@ -1,4 +1,4 @@
-import type { Result, ToolCtx, ResultBlock } from "../sdk/types";
+import type { RunFn, ResultBlock } from "../sdk/types";
 import { buildMortgageXlsx } from "./xlsx";
 
 export interface Scenario {
@@ -79,11 +79,7 @@ export function computeMortgage(input: Record<string, string>): MortgageModel {
 const yrs = (months: number) =>
   `${Math.floor(months / 12)}y ${months % 12}m`;
 
-export async function run(
-  input: Record<string, string>,
-  _secrets: Record<string, string>,
-  _ctx: ToolCtx,
-): Promise<Result> {
+export const run: RunFn = async (input) => {
   const m = computeMortgage(input);
   const saved = m.baseline.totalInterest - m.scenario.totalInterest;
   const shaved = m.baseline.months - m.scenario.months;
