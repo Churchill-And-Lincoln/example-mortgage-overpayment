@@ -8,5 +8,5 @@ export const config: ToolConfig = {
   pricePence: 500,
   currency: "gbp",
   pricing: { model: "flat" },
-  requiredSecrets: [],
+  requiredSecrets: []
 };
